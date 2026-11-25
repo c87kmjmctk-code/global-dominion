@@ -1,0 +1,10 @@
+-- Prototype for trusted friends only. Client computes game rules.
+create table if not exists public.gd_rooms(code text primary key, state jsonb not null, seats text[] not null);
+alter table public.gd_rooms enable row level security;
+revoke all on public.gd_rooms from anon, authenticated;
+create or replace function public.gd_host(p_room text,p_state jsonb,p_token text) returns jsonb language plpgsql security definer set search_path=public as $$ begin insert into gd_rooms values(p_room,p_state,array[p_token]); return jsonb_build_object('seat',0,'state',p_state); end $$;
+create or replace function public.gd_join(p_room text,p_token text) returns jsonb language plpgsql security definer set search_path=public as $$ declare r gd_rooms%rowtype; i integer; begin select * into strict r from gd_rooms where code=p_room for update; i:=array_position(r.seats,p_token); if i is null then if cardinality(r.seats)>=(r.state->>'n')::int then raise exception 'Salon complet'; end if; r.seats:=array_append(r.seats,p_token); i:=cardinality(r.seats); update gd_rooms set seats=r.seats where code=p_room; end if; return jsonb_build_object('seat',i-1,'state',r.state); end $$;
+create or replace function public.gd_read(p_room text,p_token text) returns jsonb language sql security definer set search_path=public as $$ select state from gd_rooms where code=p_room and p_token=any(seats) $$;
+create or replace function public.gd_commit(p_room text,p_rev integer,p_state jsonb,p_token text) returns boolean language plpgsql security definer set search_path=public as $$ begin update gd_rooms set state=p_state where code=p_room and (state->>'rev')::int=p_rev and seats[(state->>'turn')::int+1]=p_token and (p_state->>'rev')::int=p_rev+1 and p_state->>'n'=state->>'n'; return found; end $$;
+revoke execute on function public.gd_host(text,jsonb,text),public.gd_join(text,text),public.gd_read(text,text),public.gd_commit(text,integer,jsonb,text) from public;
+grant execute on function public.gd_host(text,jsonb,text),public.gd_join(text,text),public.gd_read(text,text),public.gd_commit(text,integer,jsonb,text) to anon;
